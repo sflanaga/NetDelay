@@ -4,9 +4,6 @@ appenders:
     kind: console
   requests:
     kind: file
-    path: "requests.log"
-    encoder:
-      pattern: "{d} - {m}{n}"
   roll: #Define appenders of rooling_file
     kind: rolling_file
     path: "roll.log"
@@ -28,3 +25,4 @@ root:
   appenders:
     - stdout
     - roll
+    - requests

@@ -41,6 +41,7 @@ pub fn init_log(cli: &Cli) -> Result<()> {
         info!("START with log configured from {}", log_config.to_str().unwrap());
         Ok(())
     } else {
+        println!("using env_logger");
         init_log_env(cli.log_level);
         Ok(())
     }
