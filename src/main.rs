@@ -171,6 +171,7 @@ fn single_line_error(e: &anyhow::Error) -> String {
 fn server(mut stream: TcpStream, cli: &Cli) -> Result<()> {
     stream.set_read_timeout(Some(cli.timeout_socket)).context("setting read timeout")?;
     stream.set_write_timeout(Some(cli.timeout_socket)).context("setting write timeout")?;
+    stream.set_nodelay(true).context("setting nodelay of server socket");
     let client_addr = stream.peer_addr().context("Unable to get peer_address after incoming connection")?;
     info!("Connection from: {:?}", &client_addr);
 
@@ -178,6 +179,7 @@ fn server(mut stream: TcpStream, cli: &Cli) -> Result<()> {
         let mut tp: TimePacket = bincode::deserialize_from(&stream).context(format!("with client IP {} at read", client_addr))?;
         tp.resp_time = Some(std::time::Instant::now());
         bincode::serialize_into(&stream, &tp).context(format!("with client IP {} at write", client_addr))?;
+        stream.flush();
         if let Some(ref dur) = cli.interval {
             std::thread::sleep(*dur);
         }
@@ -191,6 +193,8 @@ fn build_client_stream(cli: &Cli, socker_addr: &SocketAddr) -> Result<TcpStream>
     let mut stream = TcpStream::connect_timeout(&socker_addr, cli.timeout_socket).context("setting connect timeout of client socket")?;
     stream.set_read_timeout(Some(cli.timeout_socket)).context("setting read timeout of client socket")?;
     stream.set_write_timeout(Some(cli.timeout_socket)).context("setting write timeout of client socket")?;
+    stream.set_nodelay(true).context("setting nodelay").context("setting nodelay of client socket");
+
     Ok(stream)
 }
 
