@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use chrono::Utc;
-use env_logger; //::{Builder, Env, fmt::{Color, Formatter}};
+//use env_logger; //::{Builder, Env, fmt::{Color, Formatter}};
 use log::LevelFilter;
 use std::time::Duration;
 use anyhow::{anyhow,Context};
@@ -10,6 +10,11 @@ use std::str::FromStr;
 use log::{debug, error, info, trace, warn};
 
 use crate::cli::Cli;
+use log4rs::append::console::ConsoleAppender;
+use log4rs::Config;
+use log4rs::config::{Appender, Root};
+use log4rs::encode::pattern::PatternEncoder;
+
 type Result<T> = anyhow::Result<T, anyhow::Error>;
 
 #[allow(unused)]
@@ -17,7 +22,7 @@ pub fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
 }
 
-
+/*
 pub fn init_log_env(level: LevelFilter) {
 
     let mut builder = env_logger::Builder::new();
@@ -33,7 +38,7 @@ pub fn init_log_env(level: LevelFilter) {
     builder.filter_level(level);
     builder.init();
 }
-
+*/
 pub fn init_log(cli: &Cli) -> Result<()> {
     if let Some(ref log_config) = cli.log_config {
         log4rs::init_file(log_config,Default::default())?;
@@ -41,8 +46,15 @@ pub fn init_log(cli: &Cli) -> Result<()> {
         info!("START with log configured from {}", log_config.to_str().unwrap());
         Ok(())
     } else {
-        println!("using env_logger");
-        init_log_env(cli.log_level);
+        println!("using default console logging");
+        let log_level = cli.log_level.unwrap_or(LevelFilter::Info);
+        let pat = Box::new(PatternEncoder::new("{d(%Y-%m-%d %H:%M:%S%.3f %Z)(utc)} [{l:<5}] {f}:{L} - {m} {n}"));
+        let stdout = ConsoleAppender::builder().encoder(pat).build();
+        let config = Config::builder()
+            .appender(Appender::builder().build("stdout", Box::new(stdout)))
+            .build(Root::builder().appender("stdout").build(log_level))
+            .unwrap();
+        let handle = log4rs::init_config(config).unwrap();
         Ok(())
     }
 }

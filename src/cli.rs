@@ -61,13 +61,21 @@ pub struct Cli {
     /// warn level logging threshold for turn-around time
     pub warn_threshold: Duration,
 
-    #[structopt(short = "L", long, parse(try_from_str = to_log_level), default_value("info"), conflicts_with("log_config"))]
+    #[structopt(short = "l", long, name="log_level", parse(try_from_str = to_log_level), conflicts_with("log_config"))]
     /// log level
-    pub log_level: LevelFilter,
+    pub log_level: Option<LevelFilter>,
 
-    #[structopt(short = "C", long)]
+    #[structopt(short = "L", long, name="log_config", conflicts_with("log_level"))]
     /// use log4rs configuration file
-    pub log_config: Option<PathBuf>
+    pub log_config: Option<PathBuf>,
+
+    #[structopt(short = "H", long)]
+    /// write stats using 1s500ms888us format instead of float milliseconds
+    pub human_time: bool,
+
+    #[structopt(short = "B", long, default_value("60s"), parse(try_from_str = dur_from_str))]
+    /// break time if there are error trying to setup or RE-setup connections
+    pub break_time: Duration,
 }
 
 

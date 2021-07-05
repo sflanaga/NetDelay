@@ -106,6 +106,7 @@ impl TimePacket {
 fn main() {
     if let Err(err) = run() {
         eprintln!("Error: {:?}", &err);
+        error!("Error: {:?}", &err);
         std::process::exit(1);
     }
 }
@@ -139,17 +140,11 @@ fn run() -> Result<()> {
     } else if let Some(mut socker_addr) = cli.client {
         let mut stat = Stat::new();
         if let Some(ticker_interval) = cli.ticker_interval {
-            spawn_ticker(ticker_interval, stat.clone());
+            let cli = cli.clone();
+            spawn_ticker(&cli, ticker_interval, stat.clone());
         }
         socker_addr.set_port(cli.port);
-        info!("client connecting to {}", &socker_addr);
-        let mut stream = TcpStream::connect_timeout(&socker_addr, cli.timeout_socket).context("setting connect timeout of client socket")?;
-        stream.set_read_timeout(Some(cli.timeout_socket)).context("setting read timeout of client socket")?;
-        stream.set_write_timeout(Some(cli.timeout_socket)).context("setting write timeout of client socket")?;
-        match client(stream, &cli, stat) {
-            Err(e) => error!("error cause client to stop: {}", single_line_error(&e)),
-            _ => {}
-        }
+        client_forever(&cli, stat, &socker_addr);
         stop_ticker();
 
     } else {
@@ -191,6 +186,40 @@ fn server(mut stream: TcpStream, cli: &Cli) -> Result<()> {
     return Ok(());
 }
 
+
+fn build_client_stream(cli: &Cli, socker_addr: &SocketAddr) -> Result<TcpStream> {
+    let mut stream = TcpStream::connect_timeout(&socker_addr, cli.timeout_socket).context("setting connect timeout of client socket")?;
+    stream.set_read_timeout(Some(cli.timeout_socket)).context("setting read timeout of client socket")?;
+    stream.set_write_timeout(Some(cli.timeout_socket)).context("setting write timeout of client socket")?;
+    Ok(stream)
+}
+
+fn client_forever(cli: &Cli, mut stat: Stat, socker_addr: &SocketAddr) {
+    loop {
+        info!("client trying to connect to {}", &socker_addr);
+        let mut stream = loop {
+            match build_client_stream(&cli, &socker_addr) {
+                Err(e) => {
+                    error!("Unable to build client stream: {}", single_line_error(&e));
+                    info!("Will attempt to reconnect after a short break of {} seconds", cli.break_time.as_secs());
+                },
+                Ok(s) => break s,
+            }
+        };
+        info!("client connected to {}", &socker_addr);
+
+        match client(stream, &cli, stat.clone()) {
+            Err(e) => {
+                error!("Error after connection: {}", single_line_error(&e));
+                info!("Will attempt to reconnect after a short break of {} seconds", cli.break_time.as_secs());
+                std::thread::sleep(cli.break_time);
+            },
+            Ok(()) => break,
+        }
+
+    }
+}
+
 fn client(mut stream: TcpStream, cli: &Cli, mut stat: Stat) -> Result<()> {
     loop {
         let server_addr = stream.peer_addr().context("Unable to get peer_address after incoming connection")?;
@@ -199,7 +228,7 @@ fn client(mut stream: TcpStream, cli: &Cli, mut stat: Stat) -> Result<()> {
         bincode::serialize_into(&stream, &tp_sent).context(format!("with IP server {} at read", server_addr))?;
         let tp_recv: TimePacket = bincode::deserialize_from(&stream).context(format!("with IP server {} at write", server_addr))?;
         let dur = tp_recv.send_time.elapsed();
-        // info!("echo {} ms", dur.as_millis());
+        debug!("echo {:.3} ms", dur.as_secs_f64()*1000f64);
 
         stat.update(dur);
         // info!("post echo {} ms", dur.as_millis());
@@ -222,15 +251,17 @@ fn stop_ticker() {
     COND_STOP.1.notify_all();
 }
 
-fn spawn_ticker(dur: Duration, mut stat: Stat) {
+fn spawn_ticker(cli: &Cli, dur: Duration, mut stat: Stat) {
     {
         let mut lock = COND_STOP.0.lock().unwrap();
         *lock = false;
     }
 
+    let cli = cli.clone();
     std::thread::Builder::new()
         .name("ticker".to_string())
         .spawn(move || {
+            info!("stat ticker started");
             loop {
                 let mut tot_ticks = 0;
                 {
@@ -238,7 +269,7 @@ fn spawn_ticker(dur: Duration, mut stat: Stat) {
                     if !*lock {
                         let res = COND_STOP.1.wait_timeout(lock, dur).unwrap();
                         if *res.0 {
-                            debug!("stopping on check of condition during or interrupted sleep");
+                            info!("stopping on check of condition during or interrupted sleep");
                             break;
                         }
                     } else {
@@ -253,12 +284,22 @@ fn spawn_ticker(dur: Duration, mut stat: Stat) {
                 let (echos, tot_time_ms, max_time_ms) = stat.snap_shot();
                 let rate = (echos) as f64 / dur.as_secs() as f64;
                 tot_ticks += echos;
-                let avg_ms = Duration::from_nanos((tot_time_ms.as_nanos() / echos as u128) as u64);
-                use humantime::FormattedDuration;
-                info!("echos: {} rate: {} max time: {} avg time: {}", tot_ticks
-                      , util::greek(rate)
-                      , duration_to_human(&max_time_ms,2)
-                      , duration_to_human(&avg_ms,2));
+                if echos <= 0 {
+                    info!("No echo stats to report - no working echos");
+                } else {
+                    let avg_ms = Duration::from_nanos((tot_time_ms.as_nanos() / echos as u128) as u64);
+                    if cli.human_time {
+                        info!("echos: {} rate: {} max time: {} avg time: {}", tot_ticks
+                              , util::greek(rate)
+                              , duration_to_human(&max_time_ms, 2)
+                              , duration_to_human(&avg_ms, 2));
+                    } else {
+                        info!("echos: {} rate: {} max time: {:.3}ms avg time: {:.3}ms", tot_ticks
+                              , util::greek(rate)
+                              , max_time_ms.as_secs_f64() * 1000f64
+                              , avg_ms.as_secs_f64() * 1000f64);
+                    }
+                }
             }
         })
         .unwrap();
