@@ -232,7 +232,6 @@ fn client(mut stream: TcpStream, cli: &Cli, mut stat: Stat) -> Result<()> {
         bincode::serialize_into(&stream, &tp_sent).context(format!("with IP server {} at read", server_addr))?;
         let tp_recv: TimePacket = bincode::deserialize_from(&stream).context(format!("with IP server {} at write", server_addr))?;
         let dur = tp_recv.send_time.elapsed();
-        debug!("echo {:.3} ms", dur.as_secs_f64()*1000f64);
 
         stat.update(dur);
         // info!("post echo {} ms", dur.as_millis());
@@ -244,7 +243,11 @@ fn client(mut stream: TcpStream, cli: &Cli, mut stat: Stat) -> Result<()> {
         if let Some(ref dur) = cli.interval {
             std::thread::sleep(*dur);
         }
-        debug!("Return packet: {:?}", &dur);
+        if cli.human_time {
+            debug!("Returned packet in: {}", duration_to_human(&dur,2));
+        } else {
+            debug!("Returned packet in: {:.3}ms", &dur.as_secs_f64()*1000f64);
+        }
     }
     Ok(())
 }
