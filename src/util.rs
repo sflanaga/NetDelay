@@ -3,7 +3,7 @@ use std::io::Write;
 use chrono::Utc;
 //use env_logger; //::{Builder, Env, fmt::{Color, Formatter}};
 use log::LevelFilter;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 use anyhow::{anyhow,Context};
 use std::net::{ToSocketAddrs,SocketAddr};
 use std::str::FromStr;
@@ -169,4 +169,19 @@ pub fn str_to_socketaddr(s: &str) -> Result<SocketAddr> {
             }
         }
     }
+}
+
+pub fn sleep_until_even_interval(now: Option<&SystemTime>, interval: &Duration) {
+    let until_next = compute_until_even_interval_nanos(now, interval);
+    std::thread::sleep(until_next);
+}
+
+pub fn compute_until_even_interval_nanos(now: Option<&SystemTime>, interval: &Duration) -> Duration {
+    let now = now.unwrap_or(&SystemTime::now());
+    let now_nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("cannot get system time")
+        .as_nanos();// / dur.as_nanos();
+
+    Duration::from_nanos((((now_nanos / interval.as_nanos() + 1) *  interval.as_nanos() - now_nanos) as u64))
 }

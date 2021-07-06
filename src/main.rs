@@ -9,7 +9,7 @@ mod cli;
 
 use std::path::PathBuf;
 use structopt::StructOpt;
-use std::time::{Instant, Duration};
+use std::time::{Instant, Duration, SystemTime};
 use anyhow::{anyhow, Context};
 use log::{debug, error, info, trace, warn};
 use log::LevelFilter;
@@ -33,8 +33,9 @@ use std::fmt::Formatter;
 
 struct _Stat {
     echos: u64,
-    tot_time_ms: Duration,
-    max_time_ms: Duration,
+    tot_time: Duration,
+    max_time: Duration,
+    min_time: Duration,
 }
 
 #[derive(Clone)]
@@ -44,8 +45,9 @@ struct Stat {
 
 impl _Stat {
     fn zero(self: &mut Self) {
-        self.max_time_ms=Duration::from_secs(0);
-        self.tot_time_ms=Duration::from_secs(0);
+        self.max_time =Duration::from_secs(0);
+        self.min_time =Duration::from_secs(u64::MAX);
+        self.tot_time =Duration::from_secs(0);
         self.echos=0;
     }
 }
@@ -55,8 +57,9 @@ impl Stat {
         Stat {
             inner: Arc::new(Mutex::new(_Stat {
                 echos: 0,
-                tot_time_ms: Duration::from_secs(0),
-                max_time_ms: Duration::from_secs(0),
+                tot_time: Duration::from_secs(0),
+                max_time: Duration::from_secs(0),
+                min_time: Duration::from_millis(u64::MAX),
             }))
         }
     }
@@ -64,16 +67,17 @@ impl Stat {
     pub fn update(self: &mut Self, time_ms: Duration) {
         let mut lock = self.inner.lock().expect("Unable to update State at lock");
         lock.echos += 1;
-        lock.tot_time_ms += time_ms;
-        if time_ms > lock.max_time_ms {
-            lock.max_time_ms = time_ms;
-        }
+        lock.tot_time += time_ms;
+        lock.max_time = lock.max_time.max(time_ms);
+        lock.min_time = lock.min_time.min(time_ms);
+
     }
-    pub fn snap_shot(self: &mut Self) -> (u64, Duration, Duration) {
+    pub fn snap_shot(self: &mut Self) -> (u64, Duration, Duration, Duration) {
         let mut lock = self.inner.lock().expect("Unable to take snap_shot of Stat at lock");
-        let (echos, tot_time_ms, max_time_ms) = (lock.echos,lock.tot_time_ms,lock.max_time_ms);
+        let (echos, tot_time, max_time, min_time) =
+            (lock.echos, lock.tot_time, lock.max_time, lock.min_time);
         lock.zero();
-        (echos, tot_time_ms, max_time_ms)
+        (echos, tot_time, max_time, min_time)
     }
 }
 
@@ -104,6 +108,7 @@ impl TimePacket {
 
 
 fn main() {
+
     if let Err(err) = run() {
         eprintln!("Error: {:?}", &err);
         error!("Error: {:?}", &err);
@@ -115,6 +120,7 @@ fn run() -> Result<()> {
     let cli: Cli = Cli::from_args();
 
     util::init_log(&cli).context("initializing log configuration")?;
+
     if let Some(ref socket_addr) = cli.server {
         let mut socket_addr = if let Some(ref socket_addr) = socket_addr {
             util::str_to_socketaddr(socket_addr)?
@@ -216,7 +222,7 @@ fn client_forever(cli: &Cli, mut stat: Stat, socker_addr: &SocketAddr) {
             Err(e) => {
                 error!("Error after connection: {}", single_line_error(&e));
                 info!("Will attempt to reconnect after a short break of {} seconds", cli.break_time.as_secs());
-                std::thread::sleep(cli.break_time);
+                util::sleep_until_even_interval(None, &cli.break_time);
             },
             Ok(()) => break,
         }
@@ -241,7 +247,7 @@ fn client(mut stream: TcpStream, cli: &Cli, mut stat: Stat) -> Result<()> {
             info!("broke info threshold - echo time: {:?}", &dur);
         }
         if let Some(ref dur) = cli.interval {
-            std::thread::sleep(*dur);
+            util::sleep_until_even_interval(None, dur);
         }
         if cli.human_time {
             debug!("Returned packet in: {}", duration_to_human(&dur,2));
@@ -274,7 +280,8 @@ fn spawn_ticker(cli: &Cli, dur: Duration, mut stat: Stat) {
                 {
                     let lock = COND_STOP.0.lock().unwrap();
                     if !*lock {
-                        let res = COND_STOP.1.wait_timeout(lock, dur).unwrap();
+                        let dur_next = util::compute_until_even_interval_nanos(None, &dur);
+                        let res = COND_STOP.1.wait_timeout(lock, dur_next).unwrap();
                         if *res.0 {
                             info!("stopping on check of condition during or interrupted sleep");
                             break;
@@ -288,23 +295,25 @@ fn spawn_ticker(cli: &Cli, dur: Duration, mut stat: Stat) {
                     info!("tic stopped");
                     break;
                 }
-                let (echos, tot_time_ms, max_time_ms) = stat.snap_shot();
+                let (echos, tot_time, max_time, min_time) = stat.snap_shot();
                 let rate = (echos) as f64 / dur.as_secs() as f64;
                 tot_ticks += echos;
                 if echos <= 0 {
                     info!("No echo stats to report - no working echos");
                 } else {
-                    let avg_ms = Duration::from_nanos((tot_time_ms.as_nanos() / echos as u128) as u64);
+                    let avg_ms = Duration::from_nanos((tot_time.as_nanos() / echos as u128) as u64);
                     if cli.human_time {
-                        info!("echos: {} rate: {} max time: {} avg time: {}", tot_ticks
+                        info!("echos: {} rate: {} max time: {} avg time: {} min time: {}", tot_ticks
                               , util::greek(rate)
-                              , duration_to_human(&max_time_ms, 2)
-                              , duration_to_human(&avg_ms, 2));
+                              , duration_to_human(&max_time, 2)
+                              , duration_to_human(&avg_ms, 2)
+                              , duration_to_human(&min_time, 2));
                     } else {
-                        info!("echos: {} rate: {} max time: {:.3}ms avg time: {:.3}ms", tot_ticks
+                        info!("echos: {} rate: {} max time: {:.3}ms avg time: {:.3}ms min time: {:.3}ms", tot_ticks
                               , util::greek(rate)
-                              , max_time_ms.as_secs_f64() * 1000f64
-                              , avg_ms.as_secs_f64() * 1000f64);
+                              , max_time.as_secs_f64() * 1000f64
+                              , avg_ms.as_secs_f64() * 1000f64
+                              , min_time.as_secs_f64() * 1000f64);
                     }
                 }
             }
