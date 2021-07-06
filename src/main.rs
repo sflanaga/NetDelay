@@ -212,6 +212,7 @@ fn client_forever(cli: &Cli, mut stat: Stat, socker_addr: &SocketAddr) {
                 Err(e) => {
                     error!("Unable to build client stream: {}", single_line_error(&e));
                     info!("Will attempt to reconnect after a short break of {} seconds", cli.break_time.as_secs());
+                    util::sleep_until_even_interval(None, &cli.break_time);
                 },
                 Ok(s) => break s,
             }
